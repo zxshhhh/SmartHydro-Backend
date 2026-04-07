@@ -65,17 +65,13 @@ class PumpControlView(APIView):
     def patch(self, request, plant_id):
         try:
             plant = Plant.objects.get(id=plant_id, user=request.user)
-            new_status = request.data.get('status')          # true = ON, false = OFF
-
+            new_status = request.data.get('status')
             if new_status is None:
                 return Response({"error": "Missing 'status' field"}, status=400)
 
             plant.pump_status = bool(new_status)
             plant.save()
-
-            # Optional: immediately create one new data point so UI sees instant change
             self._simulate_one_reading(plant)
-
             return Response({
                 "message": f"Water pump turned {'ON' if plant.pump_status else 'OFF'}",
                 "plant_id": plant.id,
@@ -92,11 +88,11 @@ class PumpControlView(APIView):
         last_hum = latest.humidity if latest else 55.0
 
         import random
-        if plant.pump_status:  # ON → watering
+        if plant.pump_status:
             soil = min(100.0, last_soil + random.uniform(2.4, 4.2))
             temp = max(15.0, last_temp - random.uniform(0.3, 2.0))
             hum = min(100.0, last_hum + random.uniform(3.0, 8.0))
-        else:  # OFF → drying
+        else:
             soil = max(0.0, last_soil - random.uniform(1.8, 3.6))
             temp = last_temp + random.uniform(-1.6, 2.1)
             hum = max(30.0, last_hum - random.uniform(3, 8))
