@@ -1,4 +1,5 @@
 from rest_framework import generics, status
+from rest_framework import viewsets
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.views import APIView
@@ -17,11 +18,72 @@ class RegisterView(generics.CreateAPIView):
         serializer.save()
         return Response({"message": "User registered successfully!"}, status=status.HTTP_201_CREATED)
 
+class CurrentUserView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response({
+            "id": request.user.id,
+            "username": request.user.username,
+            "message": "Authenticated user details",
+        })
+
+class UserViewSet(viewsets.ModelViewSet):
+    queryset = User.objects.all()
+    serializer_class = UserRegistrationSerializer
+    permission_classes = [IsAuthenticated]
+
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)
+            new_password = request.data.get("password")
+            if not new_password:
+                return Response({"error": "Password required"}, status=400)
+
+            user.set_password(new_password)
+            user.save()
+
+            return Response({"message": "Password updated successfully"})
+
+        except User.DoesNotExist:
+            return Response({"error": "User not found"}, status=404)
+
+class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = User.objects.all()
+    serializer_class = UserRegistrationSerializer
+    permission_classes = [IsAuthenticated]
+
+class UserListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        users = User.objects.all().values("id", "username", "email")
+        return Response(list(users))
+
+class UserPlantsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)
+            plants = Plant.objects.filter(user=user)
+
+            serializer = PlantSerializer(plants, many=True)
+            return Response(serializer.data)
+
+        except User.DoesNotExist:
+            return Response({"error": "User not found"}, status=404)
+
 class PlantListCreateView(generics.ListCreateAPIView):
     serializer_class = PlantSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if self.request.user.is_staff:
+            return Plant.objects.all().select_related('user')
         return self.request.user.plants.all()
 
     def perform_create(self, serializer):
@@ -32,6 +94,8 @@ class PlantDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if self.request.user.is_staff:
+            return Plant.objects.all()
         return self.request.user.plants.all()
 
 class LatestSensorDataView(APIView):
@@ -39,11 +103,14 @@ class LatestSensorDataView(APIView):
 
     def get(self, request, plant_id):
         try:
-            plant = Plant.objects.get(id=plant_id, user=request.user)
+            if request.user.is_staff:
+                plant = Plant.objects.get(id=plant_id)
+            else:
+                plant = Plant.objects.get(id=plant_id, user=request.user)
+            
             latest = SensorData.objects.filter(plant=plant).first()
             if latest:
-                serializer = SensorDataSerializer(latest)
-                return Response(serializer.data)
+                return Response(SensorDataSerializer(latest).data)
             return Response({"message": "No sensor data yet"}, status=404)
         except Plant.DoesNotExist:
             return Response({"message": "Plant not found"}, status=404)
@@ -64,21 +131,31 @@ class PumpControlView(APIView):
 
     def patch(self, request, plant_id):
         try:
-            plant = Plant.objects.get(id=plant_id, user=request.user)
-            new_status = request.data.get('status')
-            if new_status is None:
+            # Admin can control any plant, normal user only their own
+            if request.user.is_staff:
+                plant = Plant.objects.get(id=plant_id)
+            else:
+                plant = Plant.objects.get(id=plant_id, user=request.user)
+
+            # ... rest of your pump logic (status handling) ...
+            status_data = request.data.get('status')
+            if status_data is None:
                 return Response({"error": "Missing 'status' field"}, status=400)
 
-            plant.pump_status = bool(new_status)
+            new_status = bool(status_data) if isinstance(status_data, (bool, int)) else \
+                        str(status_data).lower() in ['true', '1', 'on']
+
+            plant.pump_status = new_status
             plant.save()
             self._simulate_one_reading(plant)
+
             return Response({
-                "message": f"Water pump turned {'ON' if plant.pump_status else 'OFF'}",
-                "plant_id": plant.id,
+                "message": f"Pump turned {'ON' if new_status else 'OFF'}",
                 "pump_status": plant.pump_status
             })
+
         except Plant.DoesNotExist:
-            return Response({"message": "Plant not found or not yours"}, status=404)
+            return Response({"message": "Plant not found"}, status=404)
 
     def _simulate_one_reading(self, plant):
         """Force one realistic reading right after pump change"""
